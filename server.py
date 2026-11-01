@@ -120,7 +120,8 @@ def llm(instructions: str, text: str, max_tokens: int = 200, as_json: bool = Fal
     resp = OpenAI().responses.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
         instructions=instructions,
-        input=text,
+        # json_object format requires the word "JSON" in the input messages themselves, not only in instructions.
+        input=f"Respond in JSON.\n\n{text}" if as_json else text,
         max_output_tokens=max_tokens,
         **extra,
     )
