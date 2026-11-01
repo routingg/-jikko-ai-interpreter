@@ -1,4 +1,5 @@
 """Local-only Korean-to-English AI translator for 1602 LCD (6-wire parallel, RS=7,E=8,D4-D7=9..12)."""
+import json
 import os
 import re
 import threading
@@ -110,29 +111,69 @@ def send_lcd(pages):
             return {"connected": True, "simulated": False, "pages_sent": sent}
 
 
+def llm(instructions: str, text: str, max_tokens: int = 200, as_json: bool = False):
+    """One OpenAI call. With as_json, returns the parsed JSON object; otherwise the stripped text."""
+    from openai import OpenAI
+    if not os.getenv("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY is missing. Create a .env file.")
+    extra = {"text": {"format": {"type": "json_object"}}} if as_json else {}
+    resp = OpenAI().responses.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        instructions=instructions,
+        input=text,
+        max_output_tokens=max_tokens,
+        **extra,
+    )
+    out = resp.output_text.strip()
+    if not out:
+        raise RuntimeError("The AI service returned an empty response.")
+    return json.loads(out) if as_json else out
+
+
 def translate(text: str, style: str):
     if DEMO:
         demo = {"안녕하세요": "Hello!", "화장실이 어디인가요": "Where is the restroom?", "물 한 잔 주세요": "May I have some water?"}
         return demo.get(text.strip().rstrip(".!?。"), "Hello! This is a demo translation.")
-    from openai import OpenAI
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is missing. Create a .env file.")
     prompt_style = {"easy": "very simple everyday English", "polite": "polite and natural English", "standard": "natural conversational English"}.get(style, "natural conversational English")
-    client = OpenAI()
-    resp = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-        instructions=(
-            "You translate Korean to English. Translate faithfully into " + prompt_style + ". "
-            "Return ONLY the English translation; no explanations, no markdown, no labels. "
-            "Avoid unnecessary length, but preserve the meaning."
-        ),
-        input=text,
-        max_output_tokens=200,
-    )
-    result = resp.output_text.strip()
-    if not result:
-        raise RuntimeError("The translation service returned an empty response.")
-    return result
+    return llm(
+        "You translate Korean to English. Translate faithfully into " + prompt_style + ". "
+        "Return ONLY the English translation; no explanations, no markdown, no labels. "
+        "Avoid unnecessary length, but preserve the meaning."
+    , text)
+
+
+def assistant_answer(question: str):
+    """Kid-friendly assistant. Returns (korean answer for the web page, short English answer for the LCD)."""
+    if DEMO:
+        return "안녕! 나는 직코 AI 비서야. 무엇이든 물어봐!", "Hi! I am your AI helper. Ask me!"
+    data = llm(
+        "You are a friendly, safe AI helper for elementary school children in Korea. "
+        "Answer the question truthfully in simple words. You cannot look up live data such as today's weather, "
+        "news or time: say so briefly instead of guessing. Reply with a JSON object with exactly two string fields: "
+        '"ko" (1-2 short Korean sentences) and "en" (the same answer in plain ASCII English, at most 60 characters, '
+        "no emoji, no markdown).",
+        question, max_tokens=300, as_json=True)
+    ko, en = str(data.get("ko", "")).strip(), str(data.get("en", "")).strip()
+    if not ko or not en:
+        raise RuntimeError("The assistant returned an incomplete answer.")
+    return ko, en[:120]
+
+
+def guess_song(lyrics: str):
+    """Guess a song from sung lyrics. Returns a dict with Korean/English title and artist, or found=False."""
+    if DEMO:
+        return {"found": True, "title_ko": "버터", "artist_ko": "방탄소년단", "title_en": "Butter", "artist_en": "BTS"}
+    data = llm(
+        "The user sang a few lyrics of a song and a speech recognizer transcribed them, so the text may contain "
+        "recognition errors. Identify the song only if you are reasonably sure; never invent one. Reply with a JSON "
+        'object: {"found": boolean, "title_ko": string, "artist_ko": string, "title_en": string, "artist_en": string}. '
+        "title_en and artist_en must be plain ASCII (official English or romanized names). If not sure, set found to "
+        "false and leave the other fields empty.",
+        lyrics, max_tokens=200, as_json=True)
+    keys = ("title_ko", "artist_ko", "title_en", "artist_en")
+    out = {k: str(data.get(k, "")).strip() for k in keys}
+    out["found"] = bool(data.get("found")) and bool(out["title_en"])
+    return out
 
 
 @app.get("/")
@@ -145,25 +186,53 @@ def status():
     return jsonify({"demo": DEMO, "browser": BROWSER_SERIAL and not DEMO, "port": "simulation" if DEMO else PORT})
 
 
-@app.post("/api/translate")
-def api_translate():
+def run_feature(compute):
+    """Shared request flow: validate text, rate-limit, compute (result dict, LCD text), send to the LCD."""
     data = request.get_json(silent=True) or {}
     text = str(data.get("text", "")).strip()
-    style = str(data.get("style", "standard"))
     if not text or len(text) > 300:
         return jsonify({"error": "Enter between 1 and 300 characters."}), 400
     if not DEMO:
         limited = rate_limited()
         if limited:
             return jsonify({"error": limited}), 429
+    result, pages = {}, []
     try:
-        english = translate(text, style)
-        pages = lcd_pages(english)
+        result, lcd_text = compute(text, data)
+        pages = lcd_pages(lcd_text)
         hardware = send_lcd(pages)
-        return jsonify({"korean": text, "english": english, "pages": pages, "hardware": hardware})
+        return jsonify({**result, "pages": pages, "hardware": hardware})
     except Exception as exc:
-        # Translation may have succeeded but serial may have failed; report accurately.
-        return jsonify({"error": str(exc), "english": locals().get("english", ""), "pages": locals().get("pages", [])}), 502
+        # The AI step may have succeeded but serial may have failed; report accurately.
+        return jsonify({"error": str(exc), "pages": pages, **result}), 502
+
+
+@app.post("/api/translate")
+def api_translate():
+    def compute(text, data):
+        english = translate(text, str(data.get("style", "standard")))
+        return {"korean": text, "english": english}, english
+    return run_feature(compute)
+
+
+@app.post("/api/assistant")
+def api_assistant():
+    def compute(text, data):
+        ko, en = assistant_answer(text)
+        return {"question": text, "answer_ko": ko, "answer_en": en}, en
+    return run_feature(compute)
+
+
+@app.post("/api/song")
+def api_song():
+    def compute(text, data):
+        song = guess_song(text)
+        if song["found"]:
+            lcd_text = f"{song['title_en']} - {song['artist_en']}" if song["artist_en"] else song["title_en"]
+        else:
+            lcd_text = "I am not sure. Sing more lyrics!"
+        return {"lyrics": text, **song}, lcd_text
+    return run_feature(compute)
 
 
 @app.post("/api/lcd-test")
