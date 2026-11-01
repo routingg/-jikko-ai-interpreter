@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: jikko-ai-interpreter
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4
+    envVars:
+      - key: DEMO_MODE
+        value: "0"
+      - key: SERIAL_MODE
+        value: browser
+      - key: TRUST_PROXY
+        value: "1"
+      - key: RATE_LIMIT_PER_MIN
+        value: "6"
+      - key: DAILY_LIMIT
+        value: "300"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.9"
