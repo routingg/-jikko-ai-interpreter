@@ -6,6 +6,21 @@
 
 LCD 백팩의 GND→GND, VCC→5V, SDA→**A4**, SCL→**A5**. 글자가 안 보이면 백팩의 파란 가변저항으로 대비를 조절하세요.
 
+## 네오픽셀 (말하는 중 표시)
+
+데이터선 **7번 핀**, 4구(GRB). 말하기 버튼을 누르는 동안 빨간불이 숨쉬듯 깜빡이고, 음성인식이 끝나면 꺼집니다. 스케치는 `LED:BREATHE` / `LED:OFF` 명령을 받습니다. 불이 안 켜지면 `arduino/neopixel_pin_finder`를 올려 LCD에 표시되는 핀 번호를 확인한 뒤 `lcd_interpreter.ino`의 `NEO_PIN`을 바꾸세요. 라이브러리 `Adafruit NeoPixel`이 필요합니다.
+
+## 프로그램 설치 (처음 한 번)
+
+웹 페이지의 **프로그램 설치** 버튼이 `static/firmware/lcd_interpreter_uno.hex`를 Uno에 직접 올립니다(Chrome/Edge). `.ino`를 고친 뒤에는 hex를 다시 만들어야 합니다.
+
+```
+arduino-cli compile --fqbn arduino:avr:uno --output-dir build arduino/lcd_interpreter
+copy build\lcd_interpreter.ino.hex static\firmware\lcd_interpreter_uno.hex
+```
+
+서버는 COM 포트를 한 번 열어 재사용하고, 120초 동안 쓰지 않으면 자동으로 닫습니다(`SERIAL_IDLE_SECONDS`). Arduino IDE로 업로드할 때는 서버를 끄거나 2분 기다리세요.
+
 ## 실행 순서 (Windows)
 
 0. Arduino IDE 라이브러리 관리자에서 **`LiquidCrystal I2C`**(Frank de Brabander)를 설치합니다. I2C 주소는 스케치가 시작할 때 `0x20~0x3F`에서 자동으로 찾습니다. 주소를 직접 확인하려면 `arduino/i2c_scanner`를 올려 보세요.

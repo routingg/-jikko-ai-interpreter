@@ -85,29 +85,85 @@ def lcd_pages(message: str):
     return [[lines[i], lines[i + 1] if i + 1 < len(lines) else ""] for i in range(0, len(lines), 2)]
 
 
+IDLE_CLOSE = max(5.0, float(os.getenv("SERIAL_IDLE_SECONDS", "120")))
+_board = None
+_board_used = 0.0
+_watcher_started = False
+
+
+def _open_board():
+    """Return the shared Arduino port, opening it once. Call with SERIAL_LOCK held.
+
+    Opening resets a Uno (~3 s) and wipes the LCD/LED, so the port is kept open and
+    reused; _idle_watch() closes it after IDLE_CLOSE seconds so IDE uploads still work.
+    """
+    global _board, _watcher_started
+    import serial
+    if _board is not None and _board.is_open:
+        return _board
+    board = serial.Serial(PORT, BAUD, timeout=2, write_timeout=2)
+    time.sleep(2.2)  # UNO may reset on port open.
+    # Boot banners ("LCD at 0x27", "READY") can arrive after the delay; wait for READY
+    # so they are not mistaken for a packet ACK. If the board did not reset, none arrives.
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        if board.readline().decode("ascii", errors="replace").strip() == "READY":
+            break
+    board.reset_input_buffer()
+    _board = board
+    if not _watcher_started:
+        _watcher_started = True
+        threading.Thread(target=_idle_watch, daemon=True).start()
+    return board
+
+
+def _close_board():
+    """Close the shared port. Call with SERIAL_LOCK held."""
+    global _board
+    if _board is not None:
+        try:
+            _board.close()
+        except Exception:
+            pass
+        _board = None
+
+
+def release_serial():
+    with SERIAL_LOCK:
+        _close_board()
+
+
+def _idle_watch():
+    while True:
+        time.sleep(5)
+        with SERIAL_LOCK:
+            if _board is not None and time.time() - _board_used > IDLE_CLOSE:
+                _close_board()
+
+
+def _send_line(board, line):
+    """Send one protocol line and return the board's one-line reply."""
+    global _board_used
+    board.reset_input_buffer()
+    board.write((line + "\n").encode("ascii"))
+    board.flush()
+    reply = board.readline().decode("ascii", errors="replace").strip()
+    _board_used = time.time()
+    return reply
+
+
 def send_lcd(pages):
     """Send every LCD page; do not claim hardware success without serial ACK."""
     if DEMO:
         return {"connected": False, "simulated": True, "pages_sent": 0}
     if BROWSER_SERIAL:
         return {"connected": False, "simulated": False, "browser": True, "pages_sent": 0}
-    import serial
     with SERIAL_LOCK:
-        with serial.Serial(PORT, BAUD, timeout=2, write_timeout=2) as board:
-            time.sleep(2.2)  # UNO may reset on port open.
-            # Boot banners ("LCD at 0x27", "READY") can arrive after the delay; wait for READY
-            # so they are not mistaken for a packet ACK. If the board did not reset, none arrives.
-            deadline = time.time() + 3
-            while time.time() < deadline:
-                if board.readline().decode("ascii", errors="replace").strip() == "READY":
-                    break
-            board.reset_input_buffer()
+        try:
+            board = _open_board()
             sent = 0
             for n, (a, b) in enumerate(pages):
-                packet = (a + "|" + b + "\n").encode("ascii")
-                board.write(packet)
-                board.flush()
-                reply = board.readline().decode("ascii", errors="replace").strip()
+                reply = _send_line(board, a + "|" + b)
                 if reply != "OK":
                     raise RuntimeError(f"LCD acknowledgment error on page {n + 1}: {reply!r}")
                 sent += 1
@@ -115,6 +171,26 @@ def send_lcd(pages):
                     time.sleep(PAGE_SECONDS)
             # Final page stays visible after the server returns.
             return {"connected": True, "simulated": False, "pages_sent": sent}
+        except Exception:
+            _close_board()  # reconnect cleanly on the next request
+            raise
+
+
+def send_led(state):
+    """Switch the NeoPixel 'listening' light: state is 'breathe' or 'off'."""
+    if DEMO:
+        return {"connected": False, "simulated": True}
+    if BROWSER_SERIAL:
+        return {"connected": False, "simulated": False, "browser": True}
+    with SERIAL_LOCK:
+        try:
+            reply = _send_line(_open_board(), "LED:" + state.upper())
+            if reply != "OK":
+                raise RuntimeError(f"LED acknowledgment error: {reply!r}")
+            return {"connected": True, "simulated": False}
+        except Exception:
+            _close_board()
+            raise
 
 
 def llm(instructions: str, text: str, max_tokens: int = 200, as_json: bool = False):
@@ -240,6 +316,24 @@ def api_song():
             lcd_text = "I am not sure. Sing more lyrics!"
         return {"lyrics": text, **song}, lcd_text
     return run_feature(compute)
+
+
+@app.post("/api/led")
+def api_led():
+    state = str((request.get_json(silent=True) or {}).get("state", ""))
+    if state not in ("breathe", "off"):
+        return jsonify({"error": "state must be 'breathe' or 'off'."}), 400
+    try:
+        return jsonify(send_led(state))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.post("/api/serial/release")
+def api_serial_release():
+    """Let another program (IDE upload, web flasher) use the port."""
+    release_serial()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/lcd-test")
