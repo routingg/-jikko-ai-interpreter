@@ -1,14 +1,15 @@
-# 내 손안의 AI 통역사 — 실제 성공한 LCD 병렬 배선 버전
+# 내 손안의 AI 통역사 — I2C LCD 버전
 
-이 패키지는 **LCD 핀 설정 `LiquidCrystal lcd(7,8,9,10,11,12)`** 기준입니다. I2C용 프로그램이 아닙니다. 이미 성공한 배선을 유지하세요.
+이 패키지는 **I2C 백팩이 붙은 1602 LCD** 기준입니다. 병렬(6선) 배선용 코드는 git 기록(`3e667dc` 이전 커밋)에 남아 있습니다.
 
-## LCD 연결(배선 변경하지 마세요)
+## LCD 연결
 
-LCD RS→D7, E→D8, D4→D9, D5→D10, D6→D11, D7→D12, R/W→GND, VSS→GND, VDD→5V, VO는 현재 성공한 대비 연결 유지. A/K는 적절한 전류 제한 및 전원 연결을 유지하세요. LCD 7~10번 데이터 핀은 미사용입니다.
+LCD 백팩의 GND→GND, VCC→5V, SDA→**A4**, SCL→**A5**. 글자가 안 보이면 백팩의 파란 가변저항으로 대비를 조절하세요.
 
 ## 실행 순서 (Windows)
 
-1. Arduino IDE에서 `arduino/lcd_interpreter/lcd_interpreter.ino` 열고 **업로드**합니다. LCD에 `AI TRANSLATOR / READY`가 떠야 합니다.
+0. Arduino IDE 라이브러리 관리자에서 **`LiquidCrystal I2C`**(Frank de Brabander)를 설치합니다. I2C 주소는 스케치가 시작할 때 `0x20~0x3F`에서 자동으로 찾습니다. 주소를 직접 확인하려면 `arduino/i2c_scanner`를 올려 보세요.
+1. Arduino IDE에서 `arduino/lcd_interpreter/lcd_interpreter.ino` 열고 **업로드**합니다. LCD에 `AI TRANSLATOR / READY`가 떠야 합니다. **업로드할 때는 서버를 꺼 두세요.** 서버가 COM 포트를 잡고 있으면 업로드가 `액세스 거부`로 실패합니다.
 2. Arduino IDE **시리얼 모니터를 닫습니다**. (이미 사용 중인 COM 포트는 Python에서 열 수 없습니다.)
 3. `.env.example`을 `.env`로 복사하고 `OPENAI_API_KEY` 와 `ARDUINO_PORT` (예: COM4)를 지정합니다. API 키는 반드시 비공개로 유지하세요. 별도 OpenAI API 과금이 발생할 수 있습니다.
 4. `START_WINDOWS.bat`를 실행합니다. 또는 CMD에서 `py -m pip install -r requirements.txt` 후 `py server.py`를 실행합니다.
@@ -18,7 +19,8 @@ LCD RS→D7, E→D8, D4→D9, D5→D10, D6→D11, D7→D12, R/W→GND, VSS→GND
 
 ## 점검
 
-- LCD에 네모만 나오면: 과거에 성공한 LCD 문자 출력 코드로 되돌려 배선/전원/대비를 재검증하세요.
+- LCD에 네모만 나오면: I2C 스케치가 올라갔는지(병렬용 스케치면 네모만 나옵니다), 대비 가변저항, SDA/SCL 배선을 확인하세요. 시리얼로 `LCD at 0x27`이 나오면 LCD를 찾은 것이고 `NO I2C LCD FOUND`면 배선 문제입니다.
+- 서버는 켜질 때 `.env`를 읽습니다. `ARDUINO_PORT`를 바꾸면 서버를 재시작하세요. 보드를 바꾸면 COM 번호가 달라질 수 있습니다.
 - `could not open port COM3`가 보이면 `.env`의 `ARDUINO_PORT`를 실제 번호로 교체하고 시리얼 모니터를 닫으세요.
 - `LCD acknowledgment error`가 보이면 Arduino 통신속도 `9600`과 업로드된 최종 스케치를 확인하세요.
 - API 키 오류가 발생하면 OpenAI API 키와 사용 가능한 결제/모델 권한을 확인하세요.

@@ -1,4 +1,4 @@
-"""Local-only Korean-to-English AI translator for 1602 LCD (6-wire parallel, RS=7,E=8,D4-D7=9..12)."""
+"""Local-only Korean-to-English AI translator for 1602 LCD (I2C backpack on A4/A5)."""
 import json
 import os
 import re
@@ -95,6 +95,12 @@ def send_lcd(pages):
     with SERIAL_LOCK:
         with serial.Serial(PORT, BAUD, timeout=2, write_timeout=2) as board:
             time.sleep(2.2)  # UNO may reset on port open.
+            # Boot banners ("LCD at 0x27", "READY") can arrive after the delay; wait for READY
+            # so they are not mistaken for a packet ACK. If the board did not reset, none arrives.
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                if board.readline().decode("ascii", errors="replace").strip() == "READY":
+                    break
             board.reset_input_buffer()
             sent = 0
             for n, (a, b) in enumerate(pages):
